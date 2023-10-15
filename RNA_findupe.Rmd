@@ -1,0 +1,810 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Loading all necessary packages:
+```{r genpack, message=FALSE, error=FALSE, warning=FALSE, echo=FALSE}
+# install and load libraries if necessary:
+genr_packs <- c("BiocManager", "ggplot2", "tibble", "pheatmap", "factoextra", "tidyverse", "VennDiagram", "DEGreport")
+for (package in genr_packs) {
+  if (!requireNamespace(package, quietly = TRUE)) {
+    install.packages(package, dependencies = TRUE)
+  }
+  else
+    library(package, character.only = TRUE, quietly = TRUE)
+}
+```
+
+```{r biopack, message=FALSE, error=FALSE, warning=FALSE, echo=FALSE, }
+# install and load libraries dependent on BiocManager if necessary:
+bio_packs <- c("DESeq2", "edgeR", "NOISeq", "baySeq", "apeglm", "ashr")
+for (package in bio_packs) {
+  if (!requireNamespace(package, quietly = TRUE)) {
+    BiocManager::install(package)
+  }
+  else
+    library(package, character.only = TRUE, quietly =  TRUE)
+}
+```
+
+Checking package versions:
+```{r vers}
+# check Version of general packages
+for (pack in genr_packs) {
+  cat(pack, "v. ", packageDescription(pack)$Version, "\n")
+}
+
+# check Version of BiocManager packages
+for (pack in bio_packs) {
+  cat(pack, "v. ", packageDescription(pack)$Version, "\n")
+}
+```
+
+```{r stdir}
+setwd("C:/Users/Ayesha/Documents/QUT/IFN646/git/ifn646-project/code")
+```
+
+# RNA Sequential Analysis
+
+The data files contain a synthetic count matrix that represents a theoretical RNA-seq experiment with two conditions.
+```{r dloads}
+data_u500 <- read.table("data/6_500_500.tsv", header=T, row.names=1)
+data_u750 <- read.table("data/6_750_250.tsv", header=T, row.names=1)
+data_u1000 <- read.table("data/6_1000_0.tsv", header=T, row.names=1)
+```
+
+
+Creating metadata:
+```{r mdata}
+col_names <- colnames(data_u750)
+n <- length(col_names)
+
+metadata <- data.frame("Treatment" = rep(NA, n))
+
+#grp	<- factor(rep(c("Control","Treated"),times=c(4,3)))
+
+half_n <- n / 2
+metadata$Treatment[1:half_n] <- "untreated"
+metadata$Treatment[(half_n + 1):n] <- "treated"
+
+rownames(metadata) <- col_names
+metadata
+```
+
+## RNA-seq analysis using DeSeq2 package
+https://bioconductor.org/packages/release/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#theory-behind-deseq2
+We will now proceed with Quality control.
+
+Step 1: check if the rownames of Metadata file, generated above, match the column names of the count-data matrices.
+```{r rccheck}
+#rownames(metadata) colnames(data_u500)
+#rownames(metadata) colnames(data_u500)
+all(rownames(metadata) %in% colnames(data_u500))
+all(rownames(metadata) %in% colnames(data_u750))
+all(rownames(metadata) %in% colnames(data_u1000))
+```
+
+Step 2: With the count matrix and the sample information we can construct a DESeqDataSet.
+we need to create DESeqDataSet object first and then generate normalized counts.
+This step also requires creation of the design formula. Since our metadata is only based on generic conditions, the design formula will only be dependent on one factor: type of Treatment. Thus, for each gene we will evaluate gene expression change based on the levels: treated or untreated.
+```{r dsdobj, warning=FALSE, error=FALSE, message=FALSE}
+# DESeqDataSet object creation
+dds_500 <- DESeqDataSetFromMatrix(countData = data_u500, colData = metadata, design = ~Treatment)
+dds_750 <- DESeqDataSetFromMatrix(countData = data_u750, colData = metadata, design = ~Treatment)
+dds_1000 <- DESeqDataSetFromMatrix(countData = data_u1000, colData = metadata, design = ~Treatment)
+```
+
+Filtering:
+```{r}
+filter_reads <- rowSums(counts(dds_500)) >= 10
+dds_500 <- dds_500[filter_reads,]
+
+filter_reads <- rowSums(counts(dds_750)) >= 10
+dds_750 <- dds_750[filter_reads,]
+
+filter_reads <- rowSums(counts(dds_1000)) >= 10
+dds_1000 <- dds_1000[filter_reads,]
+```
+
+Estimate size factors and normalize:
+```{r snorm}
+dds_500 <- estimateSizeFactors(dds_500)
+cat("Scaling factor applied to each sample in dds_500: ", sizeFactors(dds_500))
+ddsn_500 <- counts(dds_500, normalized=TRUE)
+
+dds_750 <- estimateSizeFactors(dds_750)
+cat("\nScaling factor applied to each sample in dds_750: ", sizeFactors(dds_750))
+ddsn_750 <- counts(dds_750, normalized=TRUE)
+
+dds_1000 <- estimateSizeFactors(dds_1000)
+cat("\nScaling factor applied to each sample in dds_1000: ", sizeFactors(dds_1000))
+ddsn_1000 <- counts(dds_1000, normalized=TRUE)
+```
+
+We will use this for visualisation.
+
+Step 3: Principal Component Analysis
+```{r}
+rld_500 <- rlog(dds_500, blind=TRUE) ### Transform counts for data visualization
+#plotPCA(rld_500, intgroup="Treatment") + labs(title = "PC1 VS PC2")
+rld_mat_500 <- assay(rld_500)
+
+pca_500 <- prcomp(t(rld_mat_500))
+fviz_eig(pca_500, addlabels=TRUE, linecolor ="red", barfill="grey", barcolor ="white") + 
+  labs(title = "Scree plot", x = "Principal Components", y = "% of explained Variances")
+
+df_500 <- cbind(metadata, pca_500$x)
+ggplot(df_500) + geom_point(aes(x=PC1, y=PC2, color = Treatment), size=3) + labs(title = "PC1 VS PC2") + theme_light()
+
+fviz_pca_ind(pca_500, col.ind = "cos2", pointsize = "cos2", gradient.cols = c("#12C2E9", "#F64F59"), 
+             legend.title = "Cos2 gradients", repel = TRUE, axes = c(1, 2))
+
+rld_500_corr <- cor(rld_mat_500) 
+head(rld_500_corr)
+
+pheatmap(rld_500_corr)
+```
+
+
+```{r pcas}
+rld_750 <- rlog(dds_750, blind=TRUE) ### Transform counts for data visualization
+#plotPCA(rld_500, intgroup="Treatment") + labs(title = "PC1 VS PC2")
+rld_mat_750 <- assay(rld_750)
+
+pca_750 <- prcomp(t(rld_mat_750))
+
+fviz_eig(pca_750, addlabels=TRUE, linecolor ="red", barfill="grey", barcolor ="white") + 
+  labs(title = "Scree plot", x = "Principal Components", y = "% of explained Variances")
+
+df_750 <- cbind(metadata, pca_750$x)
+ggplot(df_750) + geom_point(aes(x=PC1, y=PC2, color = Treatment), size=3) + labs(title = "PC1 VS PC2") + theme_light()
+
+fviz_pca_ind(pca_750, col.ind = "cos2", pointsize = "cos2", gradient.cols = c("#12C2E9", "#F64F59"), 
+             legend.title = "Cos2 gradients", repel = TRUE, axes = c(1, 2))
+
+rld_750_corr <- cor(rld_mat_750) 
+head(rld_750_corr)
+
+pheatmap(rld_750_corr)
+```
+
+```{r}
+rld_1000 <- rlog(dds_1000, blind=TRUE) ### Transform counts for data visualization
+#plotPCA(rld_500, intgroup="Treatment") + labs(title = "PC1 VS PC2")
+rld_mat_1000 <- assay(rld_1000)
+
+pca_1000 <- prcomp(t(rld_mat_1000))
+fviz_eig(pca_1000, addlabels=TRUE, linecolor ="red", barfill="grey", barcolor ="white") + 
+  labs(title = "Scree plot", x = "Principal Components", y = "% of explained Variances")
+
+df_1000 <- cbind(metadata, pca_1000$x)
+ggplot(df_1000) + geom_point(aes(x=PC1, y=PC2, color = Treatment), size=3) + labs(title = "PC1 VS PC2") + theme_light()
+
+fviz_pca_ind(pca_1000, col.ind = "cos2", pointsize = "cos2", gradient.cols = c("#12C2E9", "#F64F59"), 
+             legend.title = "Cos2 gradients", repel = TRUE, axes = c(1, 2))
+
+
+rld_1000_corr <- cor(rld_mat_1000) 
+head(rld_1000_corr)
+
+pheatmap(rld_1000_corr)
+```
+
+
+```{r ddres}
+ddss_500 <- DESeq(dds_500)
+res_500 <- results(ddss_500, contrast=c("Treatment","untreated","treated"))
+res_500_pval <- res_500$pvalue
+res_500_adjp <- p.adjust(res_500_pval, "BH")
+
+ddss_750 <- DESeq(dds_750)
+res_750 <- results(ddss_750, contrast=c("Treatment","untreated","treated"))
+res_750_pval <- res_750$pvalue
+res_750_adjp <- p.adjust(res_750_pval, "BH")
+
+ddss_1000 <- DESeq(dds_1000)
+res_1000 <- results(ddss_1000, contrast=c("Treatment","untreated","treated"))
+res_1000_pval <- res_1000$pvalue
+res_1000_adjp <- p.adjust(res_1000_pval, "BH")
+```
+
+
+```{r desqexprs}
+sig_genes_500 <- subset(res_500, padj < 0.3)
+sig_genes_500$Expression_Status <- ifelse(sig_genes_500$log2FoldChange >= 0, "upstream", ifelse(sig_genes_500$log2FoldChange < 0, "downstream", 0))
+sdeg_500 <- nrow(sig_genes_500)
+res_500_tbl <- table(sig_genes_500$Expression_Status)
+count_upstream <- res_500_tbl["upstream"]
+count_downstream <- res_500_tbl["downstream"]
+count_none <- res_500_tbl["none"]
+cat("Diff expr:", sdeg_500, "Upstream:", count_upstream, " Downstream:", count_downstream, " None:", count_none)
+
+
+sig_genes_750 <- subset(res_750, padj < 0.3)
+sig_genes_750$Expression_Status <- ifelse(sig_genes_750$log2FoldChange >= 0, "upstream", ifelse(sig_genes_750$log2FoldChange < 0, "downstream", 0))
+sdeg_750 <- nrow(sig_genes_750)
+res_750_tbl <- table(sig_genes_750$Expression_Status)
+count_upstream <- res_750_tbl["upstream"]
+count_downstream <- res_750_tbl["downstream"]
+count_none <- res_750_tbl["none"]
+cat("\nDiff expr:", sdeg_750, "Upstream:", count_upstream, " Downstream:", count_downstream, " None:", count_none)
+
+sig_genes_1000 <- subset(res_750, padj < 0.3)
+sig_genes_1000$Expression_Status <- ifelse(sig_genes_1000$log2FoldChange >= 0, "upstream", ifelse(sig_genes_1000$log2FoldChange < 0, "downstream", 0))
+sdeg_1000 <- nrow(sig_genes_1000)
+res_1000_tbl <- table(sig_genes_1000$Expression_Status)
+count_upstream <- res_1000_tbl["upstream"]
+count_downstream <- res_1000_tbl["downstream"]
+count_none <- res_1000_tbl["none"]
+cat("\nDiff expr:", sdeg_1000, "Upstream:", count_upstream, " Downstream:", count_downstream, " None:", count_none)
+```
+
+
+```{r}
+# Create the volcano plot
+sig_genes_500_df <- as.data.frame(sig_genes_500)
+ggplot(sig_genes_500_df, aes(x = log2FoldChange, y = -log10(padj))) +
+  geom_point(aes(color = Expression_Status)) +
+  theme_minimal() +
+  ggtitle("Volcano Plot of Differentially Expressed Genes")
+upregulated_genes <- subset(sig_genes_500_df, Expression_Status == "upstream")
+downregulated_genes <- subset(sig_genes_500_df, Expression_Status == "downstream")
+
+sig_genes_750_df <- as.data.frame(sig_genes_750)
+ggplot(sig_genes_750_df, aes(x = log2FoldChange, y = -log10(padj))) +
+  geom_point(aes(color = Expression_Status)) +
+  theme_minimal() +
+  ggtitle("Volcano Plot of Differentially Expressed Genes")
+upregulated_genes <- subset(sig_genes_750_df, Expression_Status == "upstream")
+downregulated_genes <- subset(sig_genes_750_df, Expression_Status == "downstream")
+
+sig_genes_1000_df <- as.data.frame(sig_genes_1000)
+ggplot(sig_genes_1000_df, aes(x = log2FoldChange, y = -log10(padj))) +
+  geom_point(aes(color = Expression_Status)) +
+  theme_minimal() +
+  ggtitle("Volcano Plot of Differentially Expressed Genes")
+upregulated_genes <- subset(sig_genes_1000_df, Expression_Status == "upstream")
+downregulated_genes <- subset(sig_genes_1000_df, Expression_Status == "downstream")
+```
+
+```{r dgplot, warning=FALSE}
+degPlot(dds = ddss_500, res = res_750, n = 10, xs = "Treatment")
+degPlot(dds = ddss_750, res = res_750, n = 10, xs = "Treatment")
+degPlot(dds = ddss_1000, res = res_750, n = 10, xs = "Treatment")
+```
+
+```{r dispers}
+## Plot dispersion estimates
+plotDispEsts(ddss_500)
+plotDispEsts(ddss_750)
+plotDispEsts(ddss_1000)
+```
+
+```{r maplots, fig.width=15, fig.height=5}
+resNorm_500 <- lfcShrink(ddss_500, coef=2, type="normal")
+resAsh_500 <- lfcShrink(ddss_500, coef=2, type="ashr")
+par(mfrow=c(1,3), mar=c(2,2,2,2))
+plotMA(resNorm_500, main="normal")
+plotMA(resAsh_500, main="ashr")
+
+resNorm_750 <- lfcShrink(ddss_750, coef=2, type="normal")
+resAsh_750 <- lfcShrink(ddss_750, coef=2, type="ashr")
+par(mfrow=c(1,3), mar=c(2,2,2,2))
+plotMA(resNorm_750, main="normal")
+plotMA(resAsh_750, main="ashr")
+
+resNorm_1000 <- lfcShrink(ddss_1000, coef=2, type="normal")
+resAsh_1000 <- lfcShrink(ddss_1000, coef=2, type="ashr")
+par(mfrow=c(1,3), mar=c(2,2,2,2))
+plotMA(resNorm_1000, main="normal")
+plotMA(resAsh_1000, main="ashr")
+```
+
+
+```{r countsds, fig.width=15, fig.height=5}
+par(mfrow=c(1,2))
+plotCounts(dds_500, gene=which.min(res_500$padj), intgroup="Treatment")
+plotCounts(dds_500, gene=which.max(res_500$padj), intgroup="Treatment")
+
+par(mfrow=c(1,2))
+plotCounts(dds_750, gene=which.min(res_750$padj), intgroup="Treatment")
+plotCounts(dds_750, gene=which.max(res_750$padj), intgroup="Treatment")
+
+par(mfrow=c(1,2))
+plotCounts(dds_1000, gene=which.min(res_1000$padj), intgroup="Treatment")
+plotCounts(dds_1000, gene=which.max(res_1000$padj), intgroup="Treatment")
+```
+
+```{r boxds, fig.width=15, fig.height=5}
+par(mfrow=c(1,3))
+boxplot(log10(assays(ddss_500)[["cooks"]]), range=0, las=2)
+boxplot(log10(assays(ddss_750)[["cooks"]]), range=0, las=2)
+boxplot(log10(assays(ddss_1000)[["cooks"]]), range=0, las=2)
+```
+
+```{r}
+
+sig = subset(res_750, padj <0.3)
+summary(sig)
+```
+
+
+## RNA Sequential Analysis using EdgeR
+
+```{r grptr}
+treatment <- factor(c(rep('untreated', 6), rep('treated', 6)))
+```
+
+```{r dgels}
+dgeGlm_500 <- DGEList(counts = data_u500, group = factor(treatment))
+
+dgeGlm_750 <- DGEList(counts = data_u750, group = factor(treatment))
+
+dgeGlm_1000 <- DGEList(counts = data_u1000, group = factor(treatment))
+```
+
+Filtering:
+```{r filt}
+keep5 <- filterByExpr(dgeGlm_500, group = treatment)
+dgeGlm_500 <- dgeGlm_500[keep5,,keep.lib.sizes=FALSE]
+
+keep7 <- filterByExpr(dgeGlm_750, group = treatment)
+dgeGlm_750 <- dgeGlm_750[keep7,,keep.lib.sizes=FALSE]
+
+keep1 <- filterByExpr(dgeGlm_1000, group = treatment)
+dgeGlm_1000 <- dgeGlm_1000[keep1,,keep.lib.sizes=FALSE]
+```
+
+Normalize:
+```{r norz}
+norm_dgeGlm_500 <- calcNormFactors(dgeGlm_500)
+
+norm_dgeGlm_750 <- calcNormFactors(dgeGlm_750)
+
+norm_ddgeGlm_1000 <- calcNormFactors(dgeGlm_1000)
+```
+
+```{r mdsplot, warning=FALSE, message=FALSE, fig.width=15, fig.height=5}
+par(mfrow=c(1,3))
+plotMDS(norm_dgeGlm_500, method="logFC", col=as.numeric(norm_dgeGlm_500$samples$group))
+legend("bottomright", as.character(unique(norm_dgeGlm_500$samples$group)), col=1:3, pch=20)
+
+plotMDS(norm_dgeGlm_750, method="logFC", col=as.numeric(norm_dgeGlm_750$samples$group))
+legend("bottomright", as.character(unique(norm_dgeGlm_750$samples$group)), col=1:3, pch=20)
+
+plotMDS(norm_ddgeGlm_1000, method="logFC", col=as.numeric(norm_ddgeGlm_1000$samples$group))
+legend("bottomright", as.character(unique(norm_ddgeGlm_1000$samples$group)), col=1:3, pch=20)
+```
+
+
+```{r bcvgen}
+ddge_500 <- estimateCommonDisp(dgeGlm_500, verbose=T)
+ddge_500 <- estimateTagwiseDisp(ddge_500)
+plotBCV(ddge_500)
+
+ddge_750 <- estimateCommonDisp(dgeGlm_750, verbose=T)
+ddge_750 <- estimateTagwiseDisp(ddge_750)
+plotBCV(ddge_750)
+
+ddge_1000 <- estimateCommonDisp(dgeGlm_1000, verbose=T)
+ddge_1000 <- estimateTagwiseDisp(ddge_1000)
+plotBCV(ddge_1000)
+```
+
+
+```{r exctest}
+et_500 <- exactTest(ddge_500, pair=c(1,2)) # compare groups 1 and 2
+dt_500 <- decideTestsDGE(et_500, adjust.method="BH", p.value=0.3)
+et_500_tb <- topTags(et_500, n=nrow(et_500$table))$table #store for analysis
+summary(dt_500)
+et_dt_500 <- rownames(ddge_500)[as.logical(dt_500)] 
+plotSmear(et_500, de.tags=et_dt_500)
+abline(h = c(-2, 2), col = "blue")
+et_500_tb <- et_500_tb[which(et_500_tb$PValue < 0.3), ]
+et_500_tb
+
+et_750 <- exactTest(ddge_750, pair=c(1,2)) # compare groups 1 and 2
+dt_750 <- decideTestsDGE(et_750, adjust.method="BH", p.value=0.3)
+et_750_tb <- topTags(et_750, n=nrow(et_750$table))$table #store for analysis
+summary(dt_750)
+et_dt_750 <- rownames(ddge_750)[as.logical(dt_750)] 
+plotSmear(et_750, de.tags=et_dt_750)
+abline(h = c(-2, 2), col = "blue")
+et_750_tb <- et_750_tb[which(et_750_tb$PValue < 0.3), ]
+et_750_tb
+
+et_1000 <- exactTest(ddge_1000, pair=c(1,2)) # compare groups 1 and 2
+dt_1000 <- decideTestsDGE(et_1000, adjust.method="BH", p.value=0.3)
+et_1000_tb <- topTags(et_1000, n=nrow(et_1000$table))$table #store for analysis
+summary(dt_1000)
+et_dt_1000 <- rownames(ddge_1000)[as.logical(dt_1000)] 
+plotSmear(et_1000, de.tags=et_dt_1000)
+abline(h = c(-2, 2), col = "blue")
+et_1000_tb <- et_1000_tb[which(et_1000_tb$PValue < 0.3), ]
+et_1000_tb
+```
+
+
+```{r glmtest}
+design.mat <- model.matrix(~ 0 + ddge_500$samples$group)
+colnames(design.mat) <- levels(ddge_500$samples$group)
+d2_500 <- estimateGLMCommonDisp(ddge_500,design.mat)
+d2_auto_500 <- estimateGLMTrendedDisp(d2_500,design.mat, method="auto")
+d2_auto_500 <- estimateGLMTagwiseDisp(d2_auto_500,design.mat)
+plotBCV(d2_auto_500)
+fit2_500 <- glmFit(d2_auto_500, design.mat)
+lrt2_500 <- glmLRT(fit2_500)
+res_edg_500 <- topTags(lrt2_500)$table
+res_edg_500 <- res_edg_500[which(res_edg_500$PValue < 0.3), ]
+res_edg_500
+
+design.mat <- model.matrix(~ 0 + ddge_750$samples$group)
+colnames(design.mat) <- levels(ddge_750$samples$group)
+d2_750 <- estimateGLMCommonDisp(ddge_750,design.mat)
+d2_auto_750 <- estimateGLMTrendedDisp(d2_750,design.mat, method="auto")
+d2_auto_750 <- estimateGLMTagwiseDisp(d2_auto_750,design.mat)
+plotBCV(d2_auto_750)
+fit2_750 <- glmFit(d2_auto_750, design.mat)
+lrt2_750 <- glmLRT(fit2_750)
+res_edg_750 <- topTags(lrt2_750)$table
+res_edg_750 <- res_edg_750[which(res_edg_750$PValue < 0.3), ]
+res_edg_750
+
+design.mat <- model.matrix(~ 0 + ddge_1000$samples$group)
+colnames(design.mat) <- levels(ddge_1000$samples$group)
+d2_1000 <- estimateGLMCommonDisp(ddge_1000,design.mat)
+d2_auto_1000 <- estimateGLMTrendedDisp(d2_1000,design.mat, method="auto")
+d2_auto_1000 <- estimateGLMTagwiseDisp(d2_auto_1000,design.mat)
+plotBCV(d2_auto_1000)
+fit2_1000 <- glmFit(d2_auto_1000, design.mat)
+lrt2_1000 <- glmLRT(fit2_1000)
+res_edg_1000 <- topTags(lrt2_1000)$table
+res_edg_1000 <- res_edg_1000[which(res_edg_1000$PValue < 0.3), ]
+res_edg_1000
+```
+
+
+## RNA Sequential Analysis using NoiSeq
+
+```{r noisq, warning=FALSE, message=FALSE}
+n_500<-readData(data=data_u500, factors=metadata)
+
+n_750<-readData(data=data_u750, factors=metadata)
+
+n_1000<-readData(data=data_u1000, factors=metadata)
+```
+
+### Data exploration and quality control
+
+```{r noisqouts}
+noi_500 = noiseq(n_500, norm = "uqua", factor = "Treatment", lc = 1, replicates = "biological")
+noi_500_deg = degenes(noi_500, q = 0.3, M = NULL)
+DE.plot(noi_500, q = 0.3, graphic = "expr", log.scale = TRUE)
+
+
+noi_750 = noiseq(n_750, norm = "uqua", factor = "Treatment", lc = 1, replicates = "biological")
+noi_750_deg = degenes(noi_750, q = 0.3, M = NULL)
+DE.plot(noi_750, q = 0.3, graphic = "expr", log.scale = TRUE)
+
+
+noi_1000 = noiseq(n_1000, norm = "uqua", factor = "Treatment", lc = 1, replicates = "biological")
+noi_1000_deg = degenes(noi_1000, q = 0.3, M = NULL)
+DE.plot(noi_1000, q = 0.3, graphic = "expr", log.scale = TRUE)
+```
+
+
+## RNA Sequential Analysis using baySeq
+
+
+```{r bays}
+label <- c(rep('untreated', 6), rep('treated', 6))
+
+bayCD_500 <- new("countData",data=data.matrix(data_u500),
+					replicates=as.factor(label),
+					annotation=data.frame(geneID=rownames(data_u500), row.names=rownames(data_u500)),
+          groups=list(NDE=rep(1,length(colnames(data_u500))), DE=label))
+
+
+bayCD_750 <- new("countData",data=data.matrix(data_u750),
+					replicates=as.factor(label),
+					annotation=data.frame(geneID=rownames(data_u750), row.names=rownames(data_u750)),
+          groups=list(NDE=rep(1,length(colnames(data_u750))), DE=label))
+
+bayCD_1000 <- new("countData",data=data.matrix(data_u1000),
+					replicates=as.factor(label),
+					annotation=data.frame(geneID=rownames(data_u1000), row.names=rownames(data_u1000)),
+          groups=list(NDE=rep(1,length(colnames(data_u1000))), DE=label))
+```
+
+
+```{r baylibs}
+libsizes(bayCD_500) <- getLibsizes(bayCD_500, estimationType = "quantile")
+libsizes(bayCD_500)
+
+libsizes(bayCD_750) <- getLibsizes(bayCD_750, estimationType = "quantile")
+libsizes(bayCD_750)
+
+libsizes(bayCD_1000) <- getLibsizes(bayCD_1000, estimationType = "quantile")
+libsizes(bayCD_1000)
+```
+
+
+```{r baymas}
+plotMA.CD(bayCD_500, samplesA = "untreated", samplesB = "treated", col = c(rep("red", 1000), rep("black", 1000)))
+plotMA.CD(bayCD_750, samplesA = "untreated", samplesB = "treated", col = c(rep("red", 1000), rep("black", 1000)))
+plotMA.CD(bayCD_1000, samplesA = "untreated", samplesB = "treated", col = c(rep("red", 1000), rep("black", 1000)))
+```
+
+
+```{r bayprio}
+CDPriors_500 <- getPriors.NB(bayCD_500, samplesize = 9997, estimation = "QL", cl=NULL)
+CDPriors_750 <- getPriors.NB(bayCD_750, samplesize = 9997, estimation = "QL", cl=NULL)
+CDPriors_1000 <- getPriors.NB(bayCD_1000, samplesize = 9996, estimation = "QL", cl=NULL)
+```
+
+```{r baynull}
+plotNullPrior(CDPriors_500)
+plotNullPrior(CDPriors_750)
+plotNullPrior(CDPriors_1000)
+```
+
+```{r bayposts}
+CDPost_500 <- getLikelihoods(CDPriors_500, pET="BIC", cl=NULL)
+CDPost_500@posteriors[1:20,]
+summarisePosteriors(CDPost_500)
+
+
+CDPost_750 <- getLikelihoods(CDPriors_750, pET="BIC", cl=NULL)
+CDPost_750@posteriors[1:20,]
+summarisePosteriors(CDPost_750)
+
+
+CDPost_1000 <- getLikelihoods(CDPriors_1000, pET="BIC", cl=NULL)
+CDPost_1000@posteriors[1:20,]
+summarisePosteriors(CDPost_1000)
+```
+
+
+```{r bayrests}
+resBay_500 <- topCounts(CDPost_500, group=2, normaliseData = TRUE)
+resBay_500
+
+resBay_750 <- topCounts(CDPost_750, group=2, normaliseData = TRUE)
+resBay_750
+
+resBay_1000 <- topCounts(CDPost_1000, group=2, normaliseData = TRUE)
+resBay_1000
+```
+
+Fig: Estimated posterior probabilities of differential expression against observed fold-change
+```{r postplots}
+plotPosteriors(CDPost_500, group = 2, samplesA = 1:6, samplesB = 7:12,  col = rgb(red = exp(CDPost_500@posteriors[,2]), green = 0, blue = 0))
+
+plotPosteriors(CDPost_750, group = 2, samplesA = 1:6, samplesB = 7:12,  col = rgb(red = exp(CDPost_750@posteriors[,2]), green = 0, blue = 0))
+
+plotPosteriors(CDPost_1000, group = 2, samplesA = 1:6, samplesB = 7:12,  col = rgb(red = exp(CDPost_1000@posteriors[,2]), green = 0, blue = 0))
+```
+
+Final results:
+
+```{r}
+sig_genes_750_sort <- sig_genes_750_df %>% arrange(pvalue)
+genes_deseq <- rownames(sig_genes_750_sort)
+genes_edgeR_et <- rownames(et_750_tb)
+genes_edgeR_glm <- rownames(res_edg_750)
+genes_noiseq <- rownames(noi_750_deg)
+
+grid.newpage()
+
+# Create a list of the sets
+sets_list <- list(Set1 = genes_deseq[1:6], Set2 = genes_edgeR_et[1:6], Set3 = genes_edgeR_glm[1:6], Set4 = genes_noiseq[1:6])
+
+# Create a Venn diagram
+graph <- venn.diagram(
+  x = sets_list,
+  category.names = c("DeSeq2", "edgeR-Exact Test", "edgeR-GLM", "NoiSeq"),
+  category.names.fontface = "bold",  # Set font style
+  category.names.cex = 1.2,           # Set font size
+  category.names.offset = 0.1,        # Adjust the position of category names
+  category.names.color = "black",     # Set font color
+  item_labels = set_labels,          # Assign the labels to the items in each set
+  filename = NULL,                    # Set this to a file name if you want to save the diagram as an image
+  output = TRUE
+)
+
+grid.draw(graph)
+```
+
+
+```{r}
+#res_500
+#res_750
+#res_1000
+
+# Estimated FDRs
+fdr1 <- res_500$padj
+fdr2 <- res_750$padj
+fdr3 <- res_1000$padj
+
+# Power
+power1 <- res_500$power
+power2 <- res_750$power
+power3 <- res_1000$power
+
+# Means of total discoveries
+mean_discoveries1 <- mean(res_500$log2FoldChange)
+mean_discoveries2 <- mean(res_750$log2FoldChange)
+mean_discoveries3 <- mean(res_1000$log2FoldChange)
+
+# Standard Deviation of total discoveries
+sd_discoveries1 <- sd(res_500$log2FoldChange)
+sd_discoveries2 <- sd(res_750$log2FoldChange)
+sd_discoveries3 <- sd(res_1000$log2FoldChange)
+```
+
+```{r}
+# Load the true values from your file
+mdata_u500 <- read.table("data/6_500_500_meta.tsv", header=T, row.names=1)
+mdata_u750 <- read.table("data/6_750_250_meta.tsv", header=T, row.names=1)
+mdata_u1000 <- read.table("data/6_1000_0_meta.tsv", header=T, row.names=1)
+```
+
+```{r}
+res_750$Expression_Status <- ifelse(res_750$log2FoldChange >= 0, "upstream", ifelse(res_750$log2FoldChange < 0, "downstream", "downstream"))
+res_750_tble <- res_750[, c(1, 2, 5, 6, ncol(res_750))]
+res_750_tble$upstream <- ifelse(res_750_tble$Expression_Status == "upstream", 1, 0)
+res_750_tble$downstream <- ifelse(res_750_tble$Expression_Status == "downstream", 1, 0)
+res_750_tble$GeneID <- rownames(res_750_tble)
+
+sig_genes_750_df$GeneID <- rownames(sig_genes_750_df)
+
+res_750_tble$diff.expr <- ifelse(sig_genes_750_df$GeneID == res_750_tble$GeneID, 1, 0)
+fin_750 <- as.data.frame(res_750_tble)
+
+mdata_u750$GeneID <- rownames(mdata_u750)
+merged_df <- merge(fin_750, mdata_u750, by= "GeneID")
+merged_df$diff.expr <- as.integer(merged_df$diff.expr)
+merged_df
+TP <- 0
+TN <- 0
+FP <- 0
+FN <- 0
+
+for (i in 1:nrow(merged_df)) {
+  if (merged_df$diff.expr[i] > 0 && merged_df$differential.expression[i] > 0) {
+    TP <- TP + 1
+  } else if (merged_df$diff.expr[i] == 0 && merged_df$differential.expression[i] == 0) {
+    TN <- TN + 1
+  } else if (merged_df$diff.expr[i] == 0 && merged_df$differential.expression[i] > 0) {
+    FP <- FP + 1
+  } else if (merged_df$diff.expr[i] > 0 && merged_df$differential.expression[i] == 0) {
+    FN <- FN + 1
+  }
+}
+
+sensitivity_deseq_750 <- TP / (TP + FN)
+sensitivity_deseq_750
+specificitydeseq_750 <- TN / (TN + FP)
+specificitydeseq_750
+```
+
+
+```{r}
+et_750_tb
+```
+
+```{r}
+et_750$Expression_Status <- ifelse(et_750$logFC >= 0, "upstream", ifelse(et_750$logFC < 0, "downstream", "downstream"))
+et_750$upstream <- ifelse(et_750$Expression_Status == "upstream", 1, 0)
+et_750$downstream <- ifelse(et_750$Expression_Status == "downstream", 1, 0)
+et_750$GeneID <- rownames(et_750)
+et_750
+```
+
+
+```{r}
+et_750$GeneID <- rownames(et_750_tb)
+
+res_750_tble$diff.expr <- ifelse(sig_genes_750_df$GeneID == res_750_tble$GeneID, 1, 0)
+fin_750 <- as.data.frame(res_750_tble)
+
+mdata_u750$GeneID <- rownames(mdata_u750)
+merged_df_et <- merge(fin_750, mdata_u750, by= "GeneID")
+merged_df_et$diff.expr <- as.integer(merged_df_et$diff.expr)
+merged_df_et
+TP <- 0
+TN <- 0
+FP <- 0
+FN <- 0
+
+for (i in 1:nrow(merged_df_et)) {
+  if (merged_df_et$diff.expr[i] > 0 && merged_df_et$differential.expression[i] > 0) {
+    TP <- TP + 1
+  } else if (merged_df_et$diff.expr[i] == 0 && merged_df_et$differential.expression[i] == 0) {
+    TN <- TN + 1
+  } else if (merged_df_et$diff.expr[i] == 0 && merged_df_et$differential.expression[i] > 0) {
+    FP <- FP + 1
+  } else if (merged_df_et$diff.expr[i] > 0 && merged_df_et$differential.expression[i] == 0) {
+    FN <- FN + 1
+  }
+}
+
+sensitivity_et_750 <- TP / (TP + FN)
+sensitivity_et_750
+specificityet_750 <- TN / (TN + FP)
+specificityet_750
+```
+
+```{r}
+res_edg_500
+res_edg_750
+res_edg_1000
+```
+
+```{r}
+noi_500
+noi_750
+noi_1000
+```
+
+```{r}
+resBay_500
+resBay_750
+resBay_1000
+```
+
+```{r}
+
+resBay_500$geneID <- rownames(resBay_500)
+c1Mean <- round(rowMeans(resBay_500[,which(grepl("untreated",colnames(resBay_500)))]),2)
+c2Mean <- round(rowMeans(resBay_500[,which(grepl("treated",colnames(resBay_500)))]),2)
+fC <- log2(c2Mean/c1Mean)
+
+data_resBay_500 <- data.frame(GeneID=resBay_500$geneID, log2foldchange=fC, significance=resBay_500$FDR, c1Mean, c2Mean)
+
+```
+
+```{r}
+cond1 = counts.norm[groups$V2 == cond1.name]
+cond2 = counts.norm[groups$V2 == cond2.name]
+dat_res_500 = data.frame(rownames(res_500),
+      round(res_500$log2FoldChange, digits=2),
+		signif(res_500$padj,digits=3),
+      round(cond1.means,digits=2),
+      round(cond2.means,digits=2))
+names(dat) <- c('GeneID','log2foldchange','significance', "untreated", "treated")
+```
+
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
